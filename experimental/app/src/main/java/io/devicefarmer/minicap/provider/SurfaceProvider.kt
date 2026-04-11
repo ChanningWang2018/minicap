@@ -37,8 +37,9 @@ import io.devicefarmer.minicap.utils.DisplayManager
  * Provides screen images using [SurfaceControl]. This is pretty similar to the native version
  * of minicap but here it is done at a higher level making things a bit easier.
  */
-class SurfaceProvider(displayId: Int, targetSize: Size, orientation: Int) : BaseProvider(displayId, targetSize, orientation) {
-    constructor(display: Int) : this(display, currentScreenSize(), currentRotation())
+class SurfaceProvider(displayId: Int, targetSize: Size, orientation: Int, lazyMode: Boolean = false) : BaseProvider(displayId, targetSize, orientation, lazyMode) {
+    constructor(display: Int) : this(display, currentScreenSize(), currentRotation(), false)
+    constructor(display: Int, lazyMode: Boolean) : this(display, currentScreenSize(), currentRotation(), lazyMode)
     private var virtualDisplay: VirtualDisplay? = null
     private var displayManager: DisplayManager? = null
     private var m_displayId : Int = 0;

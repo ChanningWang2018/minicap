@@ -27,7 +27,8 @@ import java.nio.ByteOrder
  */
 @ExperimentalUnsignedTypes
 class MinicapClientOutput(
-    private val socket: LocalSocket
+    val socket: LocalSocket,
+    private val lazyMode: Boolean = false
 ) :
     DisplayOutput() {
     companion object {
@@ -75,6 +76,18 @@ class MinicapClientOutput(
             flush()
         }
         imageBuffer.reset()
+    }
+
+    /**
+     * Reads a request from client (1 byte). Used in lazy mode.
+     * Blocks until client sends a request.
+     */
+    fun requestFrame(): Byte {
+        val buffer = ByteArray(1)
+        with(socket.inputStream) {
+            read(buffer)
+        }
+        return buffer[0]
     }
 }
 

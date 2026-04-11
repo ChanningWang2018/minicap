@@ -26,9 +26,11 @@ import io.devicefarmer.minicap.output.MinicapClientOutput
 import io.devicefarmer.minicap.SimpleServer
 import io.devicefarmer.minicap.utils.DisplayManagerGlobal
 import org.slf4j.LoggerFactory
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.io.PrintStream
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Base class to provide images of the screen. Those captures can be setup from SurfaceControl - as
@@ -37,7 +39,7 @@ import java.nio.ByteBuffer
  * and sends the results to an output (could be a file for screenshot, or a minicap client receiving the
  * jpeg stream)
  */
-abstract class BaseProvider(private val displayId: Int, private val targetSize: Size, val rotation: Int) : SimpleServer.Listener,
+abstract class BaseProvider(private val displayId: Int, private val targetSize: Size, val rotation: Int, val lazyMode: Boolean = false) : SimpleServer.Listener,
     ImageReader.OnImageAvailableListener {
 
     companion object {
@@ -75,20 +77,63 @@ abstract class BaseProvider(private val displayId: Int, private val targetSize: 
     }
 
     override fun onConnection(socket: LocalSocket) {
-        clientOutput = MinicapClientOutput(socket).apply {
+        val minicapOutput = MinicapClientOutput(socket, lazyMode)
+        minicapOutput.apply {
             sendBanner(getScreenSize(),getTargetSize(),rotation)
         }
+        clientOutput = minicapOutput
         init(clientOutput)
+
+        if (lazyMode) {
+            startLazyModeWorker()
+        }
+    }
+
+    @Volatile
+    private var latestFrameData: ByteArray? = null
+
+    private fun startLazyModeWorker() {
+        Thread {
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    (clientOutput as? MinicapClientOutput)?.requestFrame()
+                    val frameData = latestFrameData
+                    if (frameData != null) {
+                        synchronized(this) {
+                            val payload = ByteArray(frameData.size + 4)
+                            ByteBuffer.wrap(payload).apply {
+                                order(ByteOrder.LITTLE_ENDIAN)
+                                putInt(frameData.size)
+                                put(frameData)
+                            }
+                            with(clientOutput.socket.outputStream) {
+                                write(payload)
+                                flush()
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    log.error("lazy mode worker error", e)
+                    break
+                }
+            }
+        }.start()
     }
 
     override fun onImageAvailable(reader: ImageReader) {
         val image = reader.acquireLatestImage()
         val currentTime = System.currentTimeMillis()
         if (image != null) {
-            if (currentTime - previousTimeStamp > framePeriodMs) {
+            val shouldEncode = lazyMode || (currentTime - previousTimeStamp > framePeriodMs)
+            if (shouldEncode) {
                 previousTimeStamp = currentTime
-                encode(image, quality, clientOutput.imageBuffer)
-                clientOutput.send()
+                val outputStream = ByteArrayOutputStream()
+                encode(image, quality, outputStream)
+                latestFrameData = outputStream.toByteArray()
+
+                if (!lazyMode) {
+                    clientOutput.send()
+                }
             } else {
                 log.debug("skipping frame ($currentTime/$previousTimeStamp)")
             }

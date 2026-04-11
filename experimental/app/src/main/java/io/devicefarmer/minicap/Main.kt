@@ -40,6 +40,7 @@ class Main {
                     when (elem) {
                         "-s" -> p.screenshot(true)
                         "-i" -> p.displayInfo(true)
+                        "-l" -> p.lazyMode(true)
                         "-h" -> showHelp().also { System.exit(0) }
                     }
                     Pair(p, elem)
@@ -56,7 +57,7 @@ class Main {
             }.first.build()
 
             provider = if (params.projection == null) {
-                SurfaceProvider(params.displayId)
+                SurfaceProvider(params.displayId, params.lazyMode)
             } else {
                 params.projection.forceAspectRatio()
                 SurfaceProvider(
@@ -65,7 +66,8 @@ class Main {
                         params.projection.targetSize.width,
                         params.projection.targetSize.height
                     ),
-                    angleToRotation(params.projection.rotation)
+                    angleToRotation(params.projection.rotation),
+                    params.lazyMode
                 )
             }
             provider.quality = params.quality
@@ -100,6 +102,7 @@ class Main {
                         "  -s:            Take a screenshot and output it to stdout. Needs -P.\n" +
                         "  -S:            Skip frames when they cannot be consumed quickly enough.\n" +
                         "  -r <value>:    Frame rate (frames/s)" +
+                        "  -l:            Lazy mode: send frame only when recv request from client.\n" +
                         "  -t:            Attempt to get the capture method running, then exit.\n" +
                         "  -i:            Get display information in JSON format. May segfault.\n" +
                         "  -h:            Show help.\n"
@@ -141,7 +144,8 @@ class Parameters private constructor(
     val quality: Int,
     val displayInfo: Boolean,
     val frameRate: Float,
-    val displayId: Int
+    val displayId: Int,
+    val lazyMode: Boolean
 ) {
     data class Builder(
         var projection: Projection? = null,
@@ -150,7 +154,8 @@ class Parameters private constructor(
         var quality: Int = 100,
         var displayInfo: Boolean = false,
         var frameRate: Float = Float.MAX_VALUE,
-        var displayId: Int = 0
+        var displayId: Int = 0,
+        var lazyMode: Boolean = false
     ) {
         //TODO make something more robust
         fun projection(p: String) = apply {
@@ -170,6 +175,7 @@ class Parameters private constructor(
         fun displayInfo(enabled: Boolean) = apply { this.displayInfo = enabled }
         fun frameRate(value: Float) = apply { this.frameRate = value }
         fun displayId(value: Int) = apply { this.displayId = value }
-        fun build() = Parameters(projection, screenshot, socket, quality, displayInfo, frameRate, displayId)
+        fun lazyMode(enabled: Boolean) = apply { this.lazyMode = enabled }
+        fun build() = Parameters(projection, screenshot, socket, quality, displayInfo, frameRate, displayId, lazyMode)
     }
 }
