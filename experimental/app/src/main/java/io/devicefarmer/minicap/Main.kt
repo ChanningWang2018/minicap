@@ -101,7 +101,7 @@ class Main {
                         "  -Q <value>:    JPEG quality (0-100).\n" +
                         "  -s:            Take a screenshot and output it to stdout. Needs -P.\n" +
                         "  -S:            Skip frames when they cannot be consumed quickly enough.\n" +
-                        "  -r <value>:    Frame rate (frames/s)" +
+                        "  -r <value>:    Frame rate (frames/s).\n" +
                         "  -l:            Lazy mode: send frame only when recv request from client.\n" +
                         "  -t:            Attempt to get the capture method running, then exit.\n" +
                         "  -i:            Get display information in JSON format. May segfault.\n" +
