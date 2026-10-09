@@ -7,3 +7,6 @@
 /obj/
 /prebuilt/
 /temp/
+/output/
+/experimental/app/prebuild/
+/.scratch/
