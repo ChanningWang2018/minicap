@@ -27,10 +27,8 @@ import java.nio.ByteOrder
  */
 @ExperimentalUnsignedTypes
 class MinicapClientOutput(
-    val socket: LocalSocket,
-    private val lazyMode: Boolean = false
-) :
-    DisplayOutput() {
+    private val socket: LocalSocket
+) : DisplayOutput() {
     companion object {
         const val BANNER_VERSION = 1
         const val BANNER_SIZE = 24
@@ -64,7 +62,15 @@ class MinicapClientOutput(
      * Sends a buffer containing a jpg image
      */
     override fun send() {
-        val data = imageBuffer.toByteArray()
+        sendFrame(imageBuffer.toByteArray())
+        imageBuffer.reset()
+    }
+
+    /**
+     * Sends a frame prefixed with its size as a 32bit little endian integer,
+     * as expected by minicap clients
+     */
+    fun sendFrame(data: ByteArray) {
         val payload = ByteArray(data.size + 4) //size: 32bit integer
         ByteBuffer.wrap(payload).apply {
             order(ByteOrder.LITTLE_ENDIAN)
@@ -75,19 +81,15 @@ class MinicapClientOutput(
             write(payload)
             flush()
         }
-        imageBuffer.reset()
     }
 
     /**
-     * Reads a request from client (1 byte). Used in lazy mode.
-     * Blocks until client sends a request.
+     * Waits for a frame request from the client (1 byte). Used in lazy mode.
+     * Blocks until the client sends a request.
+     * Returns false when the client has disconnected (end of stream).
      */
-    fun requestFrame(): Byte {
+    fun requestFrame(): Boolean {
         val buffer = ByteArray(1)
-        with(socket.inputStream) {
-            read(buffer)
-        }
-        return buffer[0]
+        return socket.inputStream.read(buffer) > 0
     }
 }
-

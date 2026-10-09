@@ -86,6 +86,10 @@ class SurfaceProvider(displayId: Int, targetSize: Size, orientation: Int, lazyMo
      * screen.
      */
     private fun initSurface(l: ImageReader.OnImageAvailableListener) {
+        if (isFramePipelineReleased()) {
+            log.info("frame pipeline already released, not setting up the capture display")
+            return
+        }
         //must be done on the main thread
         // Support  Android 12 (preview),and resolve black screen problem
         try {
@@ -110,14 +114,47 @@ class SurfaceProvider(displayId: Int, targetSize: Size, orientation: Int, lazyMo
             } catch (displayManagerException : Exception) {
                 System.err.println("$displayManagerException Could not create display using DisplayManager")
             }
+        } catch (e: IllegalStateException) {
+            //the lazy mode worker released the frame pipeline while this setup was running
+            //(client connected and disconnected right away): there is nothing left to feed
+            log.info("frame pipeline released during display setup, aborting the capture setup")
         }
         finally {
                 SurfaceControl.closeTransaction()
         }
-        getImageReader().setOnImageAvailableListener(l, handler)
+        setFrameListener(l, handler)
     }
 
     private fun initSurface() {
         initSurface(this)
+    }
+
+    /**
+     * Releases what initSurface created, called on the lazy mode worker thread once the
+     * frame pipeline is down: the fallback VirtualDisplay from the DisplayManager API
+     * and/or the display created through SurfaceControl, which exposes no destroyDisplay
+     * wrapper, so the same reflection pattern as utils/SurfaceControl is applied here.
+     */
+    override fun releaseResources() {
+        try {
+            virtualDisplay?.let { vd ->
+                log.info("releasing the virtual display")
+                vd.release()
+                virtualDisplay = null
+            }
+        } catch (e: Exception) {
+            log.warn("could not release the virtual display", e)
+        }
+        try {
+            display?.let { token ->
+                log.info("destroying the display created through SurfaceControl")
+                Class.forName("android.view.SurfaceControl")
+                    .getMethod("destroyDisplay", IBinder::class.java)
+                    .invoke(null, token)
+                display = null
+            }
+        } catch (e: Exception) {
+            log.warn("could not destroy the display created through SurfaceControl", e)
+        }
     }
 }
