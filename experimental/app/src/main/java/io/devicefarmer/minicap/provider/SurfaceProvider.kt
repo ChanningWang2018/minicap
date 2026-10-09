@@ -37,7 +37,13 @@ import io.devicefarmer.minicap.utils.DisplayManager
  * Provides screen images using [SurfaceControl]. This is pretty similar to the native version
  * of minicap but here it is done at a higher level making things a bit easier.
  */
-class SurfaceProvider(displayId: Int, targetSize: Size, orientation: Int, lazyMode: Boolean = false) : BaseProvider(displayId, targetSize, orientation, lazyMode) {
+class SurfaceProvider(
+    displayId: Int,
+    targetSize: Size,
+    orientation: Int,
+    lazyMode: Boolean = false,
+    fitProjection: Boolean = false
+) : BaseProvider(displayId, targetSize, orientation, lazyMode, fitProjection) {
     constructor(display: Int) : this(display, currentScreenSize(), currentRotation(), false)
     constructor(display: Int, lazyMode: Boolean) : this(display, currentScreenSize(), currentRotation(), lazyMode)
     private var virtualDisplay: VirtualDisplay? = null
@@ -98,7 +104,7 @@ class SurfaceProvider(displayId: Int, targetSize: Size, orientation: Int, lazyMo
             //initialise the surface to get the display in the ImageReader
             SurfaceControl.openTransaction()
             SurfaceControl.setDisplaySurface(display, getImageReader().surface)
-            SurfaceControl.setDisplayProjection(display, 0, Rect(0, 0, getScreenSize().width, getScreenSize().height), Rect(0, 0, getTargetSize().width, getTargetSize().height)           )
+            SurfaceControl.setDisplayProjection(display, 0, Rect(0, 0, getScreenSize().width, getScreenSize().height), Rect(0, 0, captureSize.width, captureSize.height)           )
             SurfaceControl.setDisplayLayerStack(display, displayInfo.layerStack)
         } catch (e: NoSuchMethodException) {
             System.err.println("Handle the exception gracefully")

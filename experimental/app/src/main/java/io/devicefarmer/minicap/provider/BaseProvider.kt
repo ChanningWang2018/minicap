@@ -31,6 +31,7 @@ import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.io.PrintStream
 import java.nio.ByteBuffer
+import kotlin.math.roundToInt
 
 /**
  * Base class to provide images of the screen. Those captures can be setup from SurfaceControl - as
@@ -39,7 +40,13 @@ import java.nio.ByteBuffer
  * and sends the results to an output (could be a file for screenshot, or a minicap client receiving the
  * jpeg stream)
  */
-abstract class BaseProvider(private val displayId: Int, private val targetSize: Size, val rotation: Int, val lazyMode: Boolean = false) : SimpleServer.Listener,
+abstract class BaseProvider(
+    private val displayId: Int,
+    private val targetSize: Size,
+    val rotation: Int,
+    val lazyMode: Boolean = false,
+    private val fitProjection: Boolean = false
+) : SimpleServer.Listener,
     ImageReader.OnImageAvailableListener {
 
     companion object {
@@ -71,13 +78,45 @@ abstract class BaseProvider(private val displayId: Int, private val targetSize: 
     abstract fun screenshot(printer: PrintStream)
     abstract fun getScreenSize(): Size
 
-    fun getTargetSize(): Size = if(rotation%2 != 0) Size(targetSize.height, targetSize.width) else targetSize
+    /**
+     * Size of the frames coming out of the capture pipeline. The display projection
+     * scales the whole screen into the capture buffer, so its aspect ratio must
+     * match the screen's or the content gets stretched: in exact projection mode the
+     * buffer is the aspect-fit of the requested size and the exact rescale happens
+     * at encode time ([scaleToOutputSize]); in fit projection mode the requested
+     * size was already rewritten to the display aspect ratio by Main, and odd
+     * rotations transpose it into the effective (upright) frame.
+     */
+    val captureSize: Size by lazy {
+        if (fitProjection) {
+            if (rotation % 2 != 0) Size(targetSize.height, targetSize.width) else targetSize
+        } else {
+            fitToScreenAspectRatio(targetSize)
+        }
+    }
+
+    /**
+     * Exact size of the encoded frames: the -P target as requested, or the capture
+     * size in fit projection mode (nothing is rescaled in that mode).
+     */
+    fun getOutputSize(): Size = if (fitProjection) captureSize else targetSize
+
     fun getImageReader(): ImageReader = imageReader
+
+    private fun fitToScreenAspectRatio(size: Size): Size {
+        val screen = getScreenSize()
+        val aspect = screen.width.toFloat() / screen.height.toFloat()
+        return if (size.height > size.width / aspect) {
+            Size(size.width, (size.width / aspect).roundToInt())
+        } else {
+            Size((size.height * aspect).roundToInt(), size.height)
+        }
+    }
 
     fun init(out: DisplayOutput) {
         imageReader = ImageReader.newInstance(
-            getTargetSize().width,
-            getTargetSize().height,
+            captureSize.width,
+            captureSize.height,
             PixelFormat.RGBA_8888,
             2
         )
@@ -86,7 +125,7 @@ abstract class BaseProvider(private val displayId: Int, private val targetSize: 
 
     override fun onConnection(socket: LocalSocket) {
         val minicapOutput = MinicapClientOutput(socket)
-        minicapOutput.sendBanner(getScreenSize(),getTargetSize(),rotation)
+        minicapOutput.sendBanner(getScreenSize(), getOutputSize(), rotation)
         clientOutput = minicapOutput
         init(clientOutput)
 
@@ -211,8 +250,19 @@ abstract class BaseProvider(private val displayId: Int, private val targetSize: 
             return
         }
         val jpeg = ByteArrayOutputStream()
-        frame.compress(Bitmap.CompressFormat.JPEG, quality, jpeg)
+        scaleToOutputSize(frame).compress(Bitmap.CompressFormat.JPEG, quality, jpeg)
         output.sendFrame(jpeg.toByteArray())
+    }
+
+    /**
+     * Rescales a captured bitmap to the exact size advertised to the client. No-op
+     * whenever the capture already has the output size (fit projection mode, or a
+     * requested size whose aspect ratio matches the display's).
+     */
+    private fun scaleToOutputSize(frame: Bitmap): Bitmap {
+        val size = getOutputSize()
+        if (frame.width == size.width && frame.height == size.height) return frame
+        return Bitmap.createScaledBitmap(frame, size.width, size.height, true)
     }
 
     /**
@@ -285,7 +335,7 @@ abstract class BaseProvider(private val displayId: Int, private val targetSize: 
                 copyPixelsFromBuffer(buffer)
             }.run {
                 //the image need to be cropped
-                Bitmap.createBitmap(this, 0, 0, getTargetSize().width, getTargetSize().height)
+                Bitmap.createBitmap(this, 0, 0, captureSize.width, captureSize.height)
             }
         }
     }
@@ -306,7 +356,9 @@ abstract class BaseProvider(private val displayId: Int, private val targetSize: 
                 copyPixelsFromBuffer(buffer)
             }.run {
                 //the image need to be cropped
-                Bitmap.createBitmap(this, 0, 0, getTargetSize().width, getTargetSize().height)
+                Bitmap.createBitmap(this, 0, 0, captureSize.width, captureSize.height)
+            }.let {
+                scaleToOutputSize(it)
             }.apply {
                 compress(Bitmap.CompressFormat.JPEG, q, out)
             }

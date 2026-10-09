@@ -41,6 +41,7 @@ class Main {
                         "-s" -> p.screenshot(true)
                         "-i" -> p.displayInfo(true)
                         "-l" -> p.lazyMode(true)
+                        "--fit-projection" -> p.fitProjection(true)
                         "-h" -> showHelp().also { System.exit(0) }
                     }
                     Pair(p, elem)
@@ -59,7 +60,12 @@ class Main {
             provider = if (params.projection == null) {
                 SurfaceProvider(params.displayId, params.lazyMode)
             } else {
-                params.projection.forceAspectRatio()
+                //by default the requested projection is honored as-is (frames are
+                //encoded at exactly the requested size); only the opt-in fit mode
+                //rewrites it to the display aspect ratio (legacy behavior)
+                if (params.fitProjection) {
+                    params.projection.forceAspectRatio()
+                }
                 SurfaceProvider(
                     params.displayId,
                     Size(
@@ -67,7 +73,8 @@ class Main {
                         params.projection.targetSize.height
                     ),
                     angleToRotation(params.projection.rotation),
-                    params.lazyMode
+                    params.lazyMode,
+                    params.fitProjection
                 )
             }
             provider.quality = params.quality
@@ -98,6 +105,9 @@ class Main {
                         "  -d <id>:       Display ID. (%d)\n" +
                         "  -n <name>:     Change the name of the abtract unix domain socket. (%s)\n" +
                         "  -P <value>:    Display projection (<w>x<h>@<w>x<h>/{0|90|180|270}).\n" +
+                        "                 Frames are encoded at exactly the requested target size.\n" +
+                        "  --fit-projection: Scale the requested projection to the display aspect\n" +
+                        "                 ratio instead of outputting the exact requested size.\n" +
                         "  -Q <value>:    JPEG quality (0-100).\n" +
                         "  -s:            Take a screenshot and output it to stdout. Needs -P.\n" +
                         "  -S:            Skip frames when they cannot be consumed quickly enough.\n" +
@@ -145,7 +155,8 @@ class Parameters private constructor(
     val displayInfo: Boolean,
     val frameRate: Float,
     val displayId: Int,
-    val lazyMode: Boolean
+    val lazyMode: Boolean,
+    val fitProjection: Boolean
 ) {
     data class Builder(
         var projection: Projection? = null,
@@ -155,7 +166,8 @@ class Parameters private constructor(
         var displayInfo: Boolean = false,
         var frameRate: Float = Float.MAX_VALUE,
         var displayId: Int = 0,
-        var lazyMode: Boolean = false
+        var lazyMode: Boolean = false,
+        var fitProjection: Boolean = false
     ) {
         //TODO make something more robust
         fun projection(p: String) = apply {
@@ -176,6 +188,7 @@ class Parameters private constructor(
         fun frameRate(value: Float) = apply { this.frameRate = value }
         fun displayId(value: Int) = apply { this.displayId = value }
         fun lazyMode(enabled: Boolean) = apply { this.lazyMode = enabled }
-        fun build() = Parameters(projection, screenshot, socket, quality, displayInfo, frameRate, displayId, lazyMode)
+        fun fitProjection(enabled: Boolean) = apply { this.fitProjection = enabled }
+        fun build() = Parameters(projection, screenshot, socket, quality, displayInfo, frameRate, displayId, lazyMode, fitProjection)
     }
 }
