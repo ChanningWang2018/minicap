@@ -33,6 +33,24 @@ CLASSPATH=/data/local/tmp/minicap.apk app_process /system/bin io.devicefarmer.mi
 -l:            Lazy mode: send frame only when recv request from client.
 ```
 
+## Projection Handling (`-P`)
+
+By default the requested `-P` target size is honored **exactly**: every encoded frame (lazy mode, push mode and `-s` screenshots alike) is exactly the requested `width x height`, matching what clients such as airtest's `snapshot(projection=(w, h))` need for cross-device template matching. The `INFO: <real>@<target>/<rot>` startup line and the banner's virtual display size both report the requested size verbatim.
+
+Internally the capture buffer keeps the display's aspect ratio (the display projection would otherwise stretch the content into a skewed frame), and the captured bitmap is rescaled to the exact requested size right before JPEG encoding. When the requested size already has the display's aspect ratio nothing is rescaled — the buffer is the requested size itself.
+
+Pass `--fit-projection` to restore the legacy behavior: the requested target is rewritten to the display aspect ratio before any capture happens (the startup `INFO` line then shows the fitted size, like the native binary does), and frames are delivered at that fitted size with no rescaling. This flag affects all frame-producing modes the same way.
+
+```bash
+# exact size: JPEG frames are exactly 360x640, even on a 16:9 display
+adb shell CLASSPATH=/data/local/tmp/minicap.apk app_process /system/bin \
+    io.devicefarmer.minicap.Main -l -P 1280x720@360x640/0 -n repro
+
+# legacy fit: a 360x640 request on a 16:9 display yields 360x203 frames
+adb shell CLASSPATH=/data/local/tmp/minicap.apk app_process /system/bin \
+    io.devicefarmer.minicap.Main -l --fit-projection -P 1280x720@360x640/0 -n repro
+```
+
 ### Client (Python) Side
 
 The Python client lives at `experimental/server/minicap_apk.py` and supports lazy mode via the `lazy=True` parameter of `get_stream()` (this is the default). When `lazy=True` the server is started with `-l`, and the client sends a 1-byte request (`b"1"`) before reading each frame:
@@ -133,4 +151,5 @@ python server/test_lazy_mode_timed.py
 ## Compatibility
 
 - Lazy mode is compatible with existing clients that use `get_stream(lazy=True)` from `experimental/server/minicap_apk.py`
-- Push mode remains the default behavior when `-l` is not specified; its behavior and wire format are unchanged
+- Push mode remains the default behavior when `-l` is not specified; its wire format is unchanged
+- The exact `-P` output applies to every mode; clients that depended on the fitted size must pass `--fit-projection`
