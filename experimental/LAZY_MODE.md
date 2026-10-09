@@ -8,9 +8,13 @@ Lazy mode allows the minicap APK to work in a pull-based model where the server 
 
 In certain use cases (e.g., low-bandwidth connections, battery-saving scenarios, or infrequent screen updates), continuously pushing frames is unnecessary. Lazy mode enables:
 
-- Client controls frame rate by sending requests
+- Client controls frame delivery by sending requests
 - Server sends the latest captured frame upon request
-- Reduces unnecessary frame encoding and network traffic
+- Reduced network traffic: no frame data is written to the socket unless the client asks for one (e.g., while the screen is static, nothing is sent)
+- The screen-refresh callback no longer performs JPEG encoding; it only caches the latest frame as a bitmap
+- JPEG encoding happens on demand, once per client request, on the lazy mode worker thread (the display thread never encodes in lazy mode)
+
+Note: lazy mode trades continuous streaming for per-request latency. Each request pays for one JPEG encoding, so it is most beneficial when the screen changes slowly or frames are needed infrequently.
 
 ## Usage
 
@@ -23,16 +27,22 @@ CLASSPATH=/data/local/tmp/minicap.apk app_process /system/bin io.devicefarmer.mi
     -n minicap -P 1080x1920@1080x1920/0 -l
 ```
 
+`-l` is listed as its own entry in the `-h` help output:
+
+```
+-l:            Lazy mode: send frame only when recv request from client.
+```
+
 ### Client (Python) Side
 
-The `minicap_apk.py` already supports lazy mode via the `lazy=True` parameter in `get_stream()`:
+The Python client lives at `experimental/server/minicap_apk.py` and supports lazy mode via the `lazy=True` parameter of `get_stream()` (this is the default). When `lazy=True` the server is started with `-l`, and the client sends a 1-byte request (`b"1"`) before reading each frame:
 
 ```python
 device = adb.connect()
 minicap = MinicapApk(device.adb)
-frame_gen = minicap.get_stream(lazy=True)  # Uses -l flag
+frame_gen = minicap.get_stream(lazy=True)  # starts the server with -l
 
-# Request frames on demand
+# Each iteration sends one request and returns the latest frame
 for frame in frame_gen:
     # Process frame
     pass
@@ -44,63 +54,83 @@ for frame in frame_gen:
 
 | File | Changes |
 |------|---------|
-| `Main.kt` | Added `-l` flag parsing and help text |
-| `Parameters.kt` | Added `lazyMode: Boolean` field |
-| `MinicapClientOutput.kt` | Added `requestFrame()` method to read client request |
-| `BaseProvider.kt` | Added lazy mode worker thread and frame buffering |
+| `Main.kt` | Added `-l` flag parsing, `-l` entry in the help text, and the `lazyMode` field of `Parameters` |
+| `MinicapClientOutput.kt` | Added `requestFrame()` to block on a 1-byte client request (returns `false` on end of stream) and `sendFrame()` to write a frame with its 4-byte little-endian size header |
+| `BaseProvider.kt` | Added lazy mode worker thread (`lazy-mode-worker`), bitmap frame cache, and bounded first-frame wait |
 
 ### Architecture
 
-**Normal Mode (Push)**:
+**Push mode (default, unchanged)**:
+
 ```
-onImageAvailable → encode → clientOutput.send() → repeat (continuous)
+onImageAvailable → encode JPEG into output buffer → clientOutput.send() → repeat (continuous)
 ```
 
-**Lazy Mode (Pull)**:
-```
-onImageAvailable → encode → save to latestFrameData
+Every screen refresh is encoded and pushed to the client as fast as `-r` allows.
 
-Worker Thread:
-while running:
-    requestFrame() → wait for 1 byte from client
-    send(latestFrameData) → send latest captured frame
+**Lazy mode (pull)**:
+
 ```
+Display callback thread (onImageAvailable):
+    cache the latest frame as a bitmap (no JPEG encoding)
+    refresh rate throttled by -r
+
+Worker thread ("lazy-mode-worker"):
+    while client connected:
+        requestFrame()  → block until 1 byte arrives from the client
+        encode the latest cached bitmap to JPEG (on demand)
+        sendFrame()     → 4-byte little-endian length header + JPEG data
+    on end of stream (client disconnected) → exit cleanly
+```
+
+The two sides are decoupled through a `latestFrame: Bitmap` cache: the display callback only refreshes the cache, and encoding happens on the worker thread only when a request arrives.
 
 ### Key Logic
 
-1. **Main.kt**: Parses `-l` flag and passes `lazyMode=true` to SurfaceProvider
+1. **Main.kt**: Parses the `-l` flag and passes `lazyMode=true` to the provider
 2. **BaseProvider**:
-   - If `lazyMode=true`: starts a worker thread that blocks on `requestFrame()`
-   - `onImageAvailable` still captures frames but stores them in `latestFrameData` instead of sending immediately
+   - `onImageAvailable` in lazy mode copies the image into the `latestFrame` bitmap cache and closes the image; no encoding. Like push mode, this is throttled by `-r`, so in lazy mode `-r` limits how often the cache is refreshed — it does not affect when frames are sent
+   - On connection, starts the `lazy-mode-worker` thread, which loops over `requestFrame()` and `sendLatestFrame()`
+   - When `requestFrame()` returns `false` (end of stream), the client has disconnected and the worker exits cleanly
+   - If a request arrives before any frame has been cached, the worker waits up to 2 seconds (polling every 50 ms, below the client's 3-second receive timeout) for the display's initial frame; if no frame appears, it logs a warning and drops the request without sending anything
 3. **MinicapClientOutput**:
-   - `requestFrame()` blocks on `socket.inputStream.read()` waiting for client request
+   - `requestFrame()` blocks on `socket.inputStream.read()` waiting for the 1-byte client request
+   - `sendFrame()` writes the 4-byte little-endian length header followed by the JPEG data, matching the push mode wire format
 
 ## Protocol
 
-The protocol remains unchanged from the standard minicap protocol. In lazy mode:
+The wire protocol is the same as the standard minicap protocol. In lazy mode:
 
-1. Server sends banner (24 bytes) on connection
+1. Server sends the banner (24 bytes) on connection
 2. Client sends `b"1"` (1 byte) to request a frame
-3. Server responds with frame (4-byte size header + JPEG data)
+3. Server responds with one frame (4-byte little-endian size header + JPEG data)
+
+Frame delivery guarantees in lazy mode:
+
+- **Initial frame**: the display produces an initial frame shortly after connection, even if the screen is static, so the first request can be served immediately in the common case
+- **Request before first frame**: if a request arrives before the display has produced any frame, the server waits up to 2 seconds for it (intentionally below the client's 3-second receive timeout); if no frame shows up, the request is dropped, a warning is logged, and no data is sent (the client's receive times out)
+- **Disconnect**: when the client closes the connection, the worker reads end of stream and exits cleanly; no resources are left blocked on the socket
 
 ## Testing
 
-Verify lazy mode works:
+Two test scripts live next to the client in `experimental/server/`:
+
+- `test_lazy_mode.py`: pushes the prebuilt APK, starts the server in lazy mode, and captures frames at 2-second intervals
+- `test_lazy_mode_timed.py`: measures frame timing precisely and saves frames for verification
 
 ```bash
-# Build APK
+# Build the APK from source
 cd experimental && ./gradlew assembleDebug
 
-# Install on device
+# Install it on the device (or rely on the scripts pushing experimental/app/prebuild/minicap-debug.apk)
 adb install app/build/outputs/apk/debug/app-debug.apk
 
-# Start in lazy mode
-adb shell "CLASSPATH=/data/local/tmp/minicap-debug.apk app_process /system/bin io.devicefarmer.minicap.Main -n minicap -P 1080x1920@1080x1920/0 -l"
-
-# From client, send requests with delay to verify behavior
+# Run the bundled lazy mode tests (adjust the ADB_DEVICE constant in each script to your device serial)
+python server/test_lazy_mode.py
+python server/test_lazy_mode_timed.py
 ```
 
 ## Compatibility
 
-- Lazy mode is compatible with existing clients that use `get_stream(lazy=True)` from `minicap_apk.py`
-- Non-lazy mode remains the default behavior when `-l` is not specified
+- Lazy mode is compatible with existing clients that use `get_stream(lazy=True)` from `experimental/server/minicap_apk.py`
+- Push mode remains the default behavior when `-l` is not specified; its behavior and wire format are unchanged
